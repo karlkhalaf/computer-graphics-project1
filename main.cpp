@@ -157,12 +157,12 @@ public:
 		// and keep the closest intersection, i.e., the one if smallest positive value of t
 		bool val = false;
 		for (size_t i = 0; i < objects.size(); ++i){
-			double tempt;
-			Vector tempP;
-			Vector tempN;
+			double tempt{};
+			Vector tempP{};
+			Vector tempN{};
 			if (objects[i]->intersect(ray, tempP, tempt, tempN)){
-				if (tempt < t){
-					val = true;
+				val = true;
+				if (tempt <= t){
 					t = tempt;
 					P = tempP;
 					N = tempN;
@@ -188,7 +188,8 @@ public:
 		if (intersect(ray, P, t, N, object_id)) {
 
 			if (objects[object_id]->mirror) {
-
+				Ray reflRay(P + 1e-5 * N, ray.u - 2*dot(ray.u, N) * N);
+				return getColor(reflRay, recursion_depth + 1);
 				// return getColor in the reflected direction, with recursion_depth+1 (recursively)
 			} // else
 
@@ -199,7 +200,7 @@ public:
 
 			// test if there is a shadow by sending a new ray
 			// if there is no shadow, compute the formula with dot products etc.
-			Vector color = light_intensity / (4 * M_PI * (light_position - P).norm2()) * std::max(0., dot(N, light_position - P)) * objects[object_id]->albedo;
+			Vector color = light_intensity / (4 * M_PI * (light_position - P).norm2()) * std::max(0., dot(N, (light_position - P)/(light_position - P).norm())) * objects[object_id]->albedo/M_PI;
 			return color;
 			// TODO (lab 2) : add indirect lighting component with a recursive call
 		}
@@ -223,7 +224,7 @@ int main() {
 		engine[i].seed(i);
 	}
 
-	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8));
+	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), true);
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
 	Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
