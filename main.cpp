@@ -2,7 +2,6 @@
 #include <vector>
 #include <cmath>
 #include <random>
-
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -198,11 +197,29 @@ public:
 				// return getColor in the refraction direction, with recursion_depth+1 (recursively)
 			} // else
 
-			// test if there is a shadow by sending a new ray
-			// if there is no shadow, compute the formula with dot products etc.
-			Vector color = light_intensity / (4 * M_PI * (light_position - P).norm2()) * std::max(0., dot(N, (light_position - P)/(light_position - P).norm())) * objects[object_id]->albedo/M_PI;
+			Vector to_light = light_position - P;
+			double dist_to_light = to_light.norm();
+			Vector light_dir = to_light / dist_to_light;
+
+			Ray shadowRay(P + 1e-5 * N, light_dir);
+
+			Vector shadowP, shadowN;
+			double shadowT = 1e10;
+			int shadowObjectId;
+			if (intersect(shadowRay, shadowP, shadowT, shadowN, shadowObjectId) && shadowT < dist_to_light) {
+				return Vector(0, 0, 0);
+			}
+
+			double cos_theta = std::max(0.0, dot(N, light_dir));
+			Vector color =
+				(light_intensity / (4.0 * M_PI * dist_to_light * dist_to_light)) *
+				cos_theta *
+				(objects[object_id]->albedo / M_PI);
+
 			return color;
-			// TODO (lab 2) : add indirect lighting component with a recursive call
+
+			// TODO (lab 2) : add indirect lighting component with a recursive call 
+
 		}
 
 		return Vector(0, 0, 0);
@@ -266,6 +283,11 @@ int main() {
 			// TODO (lab 2) : add Monte Carlo / averaging of random ray contributions here
 			// TODO (lab 2) : add antialiasing by altering the ray_direction here
 			// TODO (lab 2) : add depth of field effect by altering the ray origin (and direction) here
+			int nb_paths = 10;
+			for (int k = 0; k < nb_paths; ++k){
+				double u = uniform(engine);
+				double v = uniform(engine);
+			}
 
 			color  = scene.getColor(ray, 0);
 
