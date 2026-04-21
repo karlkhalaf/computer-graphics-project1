@@ -182,7 +182,7 @@ public:
 		// TODO (lab 1) : if intersect with ray, use the returned information to compute the color ; otherwise black 
 		// in lab 1, the color only includes direct lighting with shadows
 
-		Vector P, N;
+		Vector P, N; 
 		double t = 1e10;
 		int object_id;
 		if (intersect(ray, P, t, N, object_id)) {
