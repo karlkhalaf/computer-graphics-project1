@@ -287,7 +287,7 @@ int main() {
 			for (int k = 0; k < nb_paths; ++k){
 				double u = uniform(engine);
 				double v = uniform(engine);
-			}
+			} 
 
 			color  = scene.getColor(ray, 0);
 
