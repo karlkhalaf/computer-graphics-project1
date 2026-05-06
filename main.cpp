@@ -3,6 +3,9 @@
 #include <cmath>
 #include <random>
 #include <omp.h>
+#include <fstream>
+#include <map>
+#include <string>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -283,19 +286,346 @@ public:
 		// lab 3 : for each triangle, compute the ray-triangle intersection with Moller-Trumbore algorithm
 		// lab 3 : once done, speed it up by first checking against the mesh bounding box
 		// lab 4 : recursively apply the bounding-box test from a BVH datastructure
+		if (vertices.empty() || indices.empty()) return false;
 
+		if (!bvh_built) {
+	#pragma omp critical
+			{
+				if (!bvh_built) build_bvh();
+			}
+		}
 
-		return false;
+		if (bvh_nodes.empty()) return false;
+
+		bool hit = false;
+		double best_t = 1e30;
+		Vector best_P;
+		Vector best_N;
+
+		intersect_bvh(0, ray, hit, best_t, best_P, best_N);
+
+		if (!hit) return false;
+
+		t = best_t;
+		P = best_P;
+		N = best_N;
+		return true;
 	}
 
+	struct BVHNode {
+		Vector bmin, bmax;
+		int start, end;
+		int left, right;
+	};
+
+	void bbox_reset(Vector& bmin, Vector& bmax) const {
+		bmin = Vector(1e30, 1e30, 1e30);
+		bmax = Vector(-1e30, -1e30, -1e30);
+	}
+
+	void bbox_add_point(Vector& bmin, Vector& bmax, const Vector& p) const {
+		for (int a = 0; a < 3; ++a) {
+			if (p[a] < bmin[a]) bmin[a] = p[a];
+			if (p[a] > bmax[a]) bmax[a] = p[a];
+		}
+	}
+
+	Vector triangle_center(int tri_id) const {
+		const TriangleIndices& tri = indices[tri_id];
+		return (vertices[tri.vtx[0]] + vertices[tri.vtx[1]] + vertices[tri.vtx[2]]) / 3.0;
+	}
+
+	void triangle_bbox(int tri_id, Vector& bmin, Vector& bmax) const {
+		const TriangleIndices& tri = indices[tri_id];
+
+		bbox_reset(bmin, bmax);
+
+		bbox_add_point(bmin, bmax, vertices[tri.vtx[0]]);
+		bbox_add_point(bmin, bmax, vertices[tri.vtx[1]]);
+		bbox_add_point(bmin, bmax, vertices[tri.vtx[2]]);
+	}
+
+	double triangle_center_axis(int tri_id, int axis) const {
+		const TriangleIndices& tri = indices[tri_id];
+
+		return (
+			vertices[tri.vtx[0]][axis] +
+			vertices[tri.vtx[1]][axis] +
+			vertices[tri.vtx[2]][axis]
+		) / 3.0;
+	}
+
+	void swap_triangles(int i, int j) const {
+		int tmp = bvh_triangles[i];
+		bvh_triangles[i] = bvh_triangles[j];
+		bvh_triangles[j] = tmp;
+	}
+
+	void sort_triangles(int left, int right, int axis) const {
+		int i = left;
+		int j = right;
+
+		double pivot = triangle_center_axis(bvh_triangles[(left + right) / 2], axis);
+
+		while (i <= j) {
+			while (triangle_center_axis(bvh_triangles[i], axis) < pivot) ++i;
+			while (triangle_center_axis(bvh_triangles[j], axis) > pivot) --j;
+
+			if (i <= j) {
+				swap_triangles(i, j);
+				++i;
+				--j;
+			}
+		}
+
+		if (left < j) sort_triangles(left, j, axis);
+		if (i < right) sort_triangles(i, right, axis);
+	}
+
+	void build_bvh() const {
+		bvh_nodes.clear();
+		bvh_triangles.resize(indices.size());
+
+		for (int i = 0; i < (int)indices.size(); ++i) {
+			bvh_triangles[i] = i;
+		}
+
+		if (!indices.empty()) {
+			build_bvh_node(0, (int)indices.size());
+		}
+
+		bvh_built = true;
+	}
+
+	int build_bvh_node(int start, int end) const {
+		BVHNode node;
+
+		node.start = start;
+		node.end = end;
+		node.left = -1;
+		node.right = -1;
+
+		bbox_reset(node.bmin, node.bmax);
+
+		Vector centroid_min;
+		Vector centroid_max;
+		bbox_reset(centroid_min, centroid_max);
+
+		for (int i = start; i < end; ++i) {
+			Vector tri_min;
+			Vector tri_max;
+
+			triangle_bbox(bvh_triangles[i], tri_min, tri_max);
+
+			bbox_add_point(node.bmin, node.bmax, tri_min);
+			bbox_add_point(node.bmin, node.bmax, tri_max);
+
+			bbox_add_point(centroid_min, centroid_max, triangle_center(bvh_triangles[i]));
+		}
+
+		int node_id = (int)bvh_nodes.size();
+		bvh_nodes.push_back(node);
+
+		int count = end - start;
+
+		if (count <= 4) {
+			return node_id;
+		}
+
+		Vector extent = centroid_max - centroid_min;
+
+		int axis = 0;
+		if (extent[1] > extent[axis]) axis = 1;
+		if (extent[2] > extent[axis]) axis = 2;
+
+		if (extent[axis] < 1e-12) {
+			return node_id;
+		}
+
+		sort_triangles(start, end - 1, axis);
+
+		int mid = (start + end) / 2;
+
+		bvh_nodes[node_id].left = build_bvh_node(start, mid);
+		bvh_nodes[node_id].right = build_bvh_node(mid, end);
+
+		return node_id;
+	}
+
+	bool bbox_intersect(
+		const Ray& ray,
+		const Vector& bmin,
+		const Vector& bmax,
+		double max_t,
+		double& tnear
+	) const {
+		double tmin = 0.0;
+		double tmax = max_t;
+
+		for (int a = 0; a < 3; ++a) {
+			if (std::fabs(ray.u[a]) < 1e-12) {
+				if (ray.O[a] < bmin[a] || ray.O[a] > bmax[a]) {
+					return false;
+				}
+			} else {
+				double t0 = (bmin[a] - ray.O[a]) / ray.u[a];
+				double t1 = (bmax[a] - ray.O[a]) / ray.u[a];
+
+				if (t0 > t1) {
+					double tmp = t0;
+					t0 = t1;
+					t1 = tmp;
+				}
+
+				if (t0 > tmin) tmin = t0;
+				if (t1 < tmax) tmax = t1;
+
+				if (tmin > tmax) return false;
+			}
+		}
+
+		tnear = tmin;
+		return true;
+	}
+
+	bool intersect_triangle(int tri_id, const Ray& ray, Vector& P, double& t, Vector& N) const {
+		const TriangleIndices& tri = indices[tri_id];
+
+		const Vector& A = vertices[tri.vtx[0]];
+		const Vector& B = vertices[tri.vtx[1]];
+		const Vector& C = vertices[tri.vtx[2]];
+
+		Vector e1 = B - A;
+		Vector e2 = C - A;
+
+		Vector pvec = cross(ray.u, e2);
+		double det = dot(e1, pvec);
+
+		if (std::fabs(det) < 1e-8) return false;
+
+		double invDet = 1.0 / det;
+
+		Vector tvec = ray.O - A;
+		double beta = dot(tvec, pvec) * invDet;
+
+		if (beta < 0.0 || beta > 1.0) return false;
+
+		Vector qvec = cross(tvec, e1);
+		double gamma = dot(ray.u, qvec) * invDet;
+
+		if (gamma < 0.0 || beta + gamma > 1.0) return false;
+
+		double cur_t = dot(e2, qvec) * invDet;
+
+		if (cur_t < 1e-8) return false;
+
+		t = cur_t;
+		P = ray.O + cur_t * ray.u;
+
+		double alpha = 1.0 - beta - gamma;
+
+		if (tri.n[0] >= 0 && tri.n[1] >= 0 && tri.n[2] >= 0 && !normals.empty()) {
+			N =
+				alpha * normals[tri.n[0]]
+				+ beta * normals[tri.n[1]]
+				+ gamma * normals[tri.n[2]];
+		} else {
+			N = cross(e1, e2);
+		}
+
+		N.normalize();
+
+		if (dot(N, ray.u) > 0) {
+			N = -1.0 * N;
+		}
+
+		return true;
+	}
+
+	void intersect_bvh(
+		int node_id,
+		const Ray& ray,
+		bool& hit,
+		double& best_t,
+		Vector& best_P,
+		Vector& best_N
+	) const {
+		const BVHNode& node = bvh_nodes[node_id];
+
+		double node_t;
+
+		if (!bbox_intersect(ray, node.bmin, node.bmax, best_t, node_t)) {
+			return;
+		}
+
+		if (node.left < 0 && node.right < 0) {
+			for (int i = node.start; i < node.end; ++i) {
+				Vector cur_P;
+				Vector cur_N;
+				double cur_t;
+
+				if (
+					intersect_triangle(bvh_triangles[i], ray, cur_P, cur_t, cur_N)
+					&& cur_t < best_t
+				) {
+					hit = true;
+					best_t = cur_t;
+					best_P = cur_P;
+					best_N = cur_N;
+				}
+			}
+
+			return;
+		}
+
+		double left_t = 1e30;
+		double right_t = 1e30;
+
+		bool hit_left =
+			node.left >= 0
+			&& bbox_intersect(
+				ray,
+				bvh_nodes[node.left].bmin,
+				bvh_nodes[node.left].bmax,
+				best_t,
+				left_t
+			);
+
+		bool hit_right =
+			node.right >= 0
+			&& bbox_intersect(
+				ray,
+				bvh_nodes[node.right].bmin,
+				bvh_nodes[node.right].bmax,
+				best_t,
+				right_t
+			);
+
+		if (hit_left && hit_right) {
+			if (left_t < right_t) {
+				intersect_bvh(node.left, ray, hit, best_t, best_P, best_N);
+				intersect_bvh(node.right, ray, hit, best_t, best_P, best_N);
+			} else {
+				intersect_bvh(node.right, ray, hit, best_t, best_P, best_N);
+				intersect_bvh(node.left, ray, hit, best_t, best_P, best_N);
+			}
+		} else if (hit_left) {
+			intersect_bvh(node.left, ray, hit, best_t, best_P, best_N);
+		} else if (hit_right) {
+			intersect_bvh(node.right, ray, hit, best_t, best_P, best_N);
+		}
+	}
 
 	std::vector<TriangleIndices> indices;
 	std::vector<Vector> vertices;
 	std::vector<Vector> normals;
 	std::vector<Vector> uvs;
 	std::vector<Vector> vertexcolors;
-};
 
+	mutable std::vector<int> bvh_triangles;
+	mutable std::vector<BVHNode> bvh_nodes;
+	mutable bool bvh_built = false;
+};
 
 class Scene {
 public:
@@ -436,20 +766,24 @@ int main() {
 	Scene scene;
 	scene.camera_center = Vector(0, 0, 55);
 	scene.light_position = Vector(-10,20,40);
-	scene.light_intensity = 3E7;
+	scene.light_intensity = 1E7;
 	scene.fov = 60 * M_PI / 180.;
 	scene.gamma = 2.2;    // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.max_light_bounce = 5;
 
-	scene.addObject(&center_sphere);
+	TriangleMesh cat(Vector(0.8,0.8, 0.8));
+	cat.readOBJ("cat.obj");
+	cat.scale_translate(0.6, Vector(0, -10, 0));
+	//scene.addObject(&center_sphere);
 
-	
 	scene.addObject(&wall_left);
 	scene.addObject(&wall_right);
 	scene.addObject(&wall_front);
 	scene.addObject(&wall_behind);
 	scene.addObject(&ceiling);
 	scene.addObject(&floor);
+
+	scene.addObject(&cat);
 	
 
 	std::vector<unsigned char> image(W * H * 3, 0);
@@ -459,7 +793,7 @@ for (int i = 0; i < H; i++) {
     for (int j = 0; j < W; j++) {
         Vector color(0., 0., 0.);
 
-        int nb_paths = 1000;
+        int nb_paths = 128;
         double sigma = 0.5;
         int thread_id = omp_get_thread_num();
 
