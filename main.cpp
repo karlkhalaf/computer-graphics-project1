@@ -495,4 +495,4 @@ for (int i = 0; i < H; i++) {
 	stbi_write_png("image.png", W, H, 3, &image[0], 0);
 
 	return 0;
-}
+} 
